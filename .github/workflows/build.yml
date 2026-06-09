@@ -68,10 +68,14 @@ jobs:
 
       - name: Package artifacts
         run: |
-          cd build
-          for bin in block-linux-*; do
-            chmod +x "$bin"
-            tar -czf "${bin}.tar.gz" "$bin" -C ../dist block-area-bot.service config.json
+          mkdir -p build/pkg
+          for bin in build/block-linux-*; do
+            name=$(basename "$bin")
+            mkdir -p "build/pkg/${name}"
+            cp "$bin" "build/pkg/${name}/block"
+            chmod +x "build/pkg/${name}/block"
+            cp -r dist "build/pkg/${name}/dist"
+            tar -czf "build/${name}.tar.gz" -C "build/pkg/${name}" .
           done
 
       - name: Delete existing beta release

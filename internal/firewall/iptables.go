@@ -12,12 +12,16 @@ const (
 )
 
 // IPTables 封装 iptables/ip6tables 命令操作
+// 自动兼容 Docker (DOCKER-USER 链) 和宝塔 (BT-INPUT 链) 环境
 type IPTables struct {
 	iptablesBin  string
 	ip6tablesBin string
+	// 需要操作的链列表（自动检测）
+	chains []string
 }
 
 // NewIPTables 创建 IPTables 实例
+// 自动检测当前环境，确定需要操作的链
 func NewIPTables() (*IPTables, error) {
 	// 优先查找 iptables-legacy，然后 iptables
 	ipt := findIPTables()
@@ -30,10 +34,39 @@ func NewIPTables() (*IPTables, error) {
 		return nil, fmt.Errorf("未找到 ip6tables 命令，请确保已安装 iptables")
 	}
 
-	return &IPTables{
+	t := &IPTables{
 		iptablesBin:  ipt,
 		ip6tablesBin: ip6t,
-	}, nil
+	}
+
+	// 自动检测需要操作的链
+	t.detectChains()
+
+	return t, nil
+}
+
+// detectChains 自动检测当前环境需要操作的链
+// - INPUT 链：始终操作（主机流量）
+// - DOCKER-USER 链：Docker 环境下操作（容器流量经过 FORWARD 链，不走 INPUT）
+// - BT-INPUT 链：宝塔面板环境下操作（宝塔自定义链）
+func (t *IPTables) detectChains() {
+	t.chains = []string{"INPUT"}
+
+	// 检测 Docker 环境：DOCKER-USER 链存在
+	if t.chainExists(t.iptablesBin, "DOCKER-USER") {
+		t.chains = append(t.chains, "DOCKER-USER")
+	}
+
+	// 检测宝塔环境：BT-INPUT 链存在
+	if t.chainExists(t.iptablesBin, "BT-INPUT") {
+		t.chains = append(t.chains, "BT-INPUT")
+	}
+}
+
+// chainExists 检查指定链是否存在
+func (t *IPTables) chainExists(bin, chain string) bool {
+	cmd := exec.Command(bin, "-L", chain, "-n")
+	return cmd.Run() == nil
 }
 
 // findIPTables 查找 iptables 可执行文件
@@ -59,8 +92,20 @@ func findIP6Tables() string {
 	return ""
 }
 
-// Name 返回后端名称
+// Name 返回后端名称（包含兼容环境信息）
 func (t *IPTables) Name() string {
+	extras := []string{}
+	for _, chain := range t.chains {
+		if chain == "DOCKER-USER" {
+			extras = append(extras, "docker")
+		}
+		if chain == "BT-INPUT" {
+			extras = append(extras, "bt")
+		}
+	}
+	if len(extras) > 0 {
+		return "iptables (兼容: " + strings.Join(extras, ", ") + ")"
+	}
 	return "iptables"
 }
 
@@ -85,6 +130,7 @@ type RuleSpec struct {
 }
 
 // ApplyRule 应用一条规则到 iptables
+// 自动在所有检测到的链（INPUT、DOCKER-USER、BT-INPUT）中插入规则
 func (t *IPTables) ApplyRule(spec RuleSpec) error {
 	bin := t.iptablesBin
 	if spec.IPv6 {
@@ -105,42 +151,62 @@ func (t *IPTables) ApplyRule(spec RuleSpec) error {
 		}
 	}
 
-	for _, proto := range protocols {
-		args := t.buildRuleArgs(spec, proto, comment)
+	for _, chain := range t.chains {
+		// IPv6 规则不操作 DOCKER-USER 链（Docker 通常不支持 IPv6 的 DOCKER-USER）
+		if spec.IPv6 && chain == "DOCKER-USER" {
+			continue
+		}
 
-		if spec.Mode == "white" {
-			// 白名单模式：ACCEPT 匹配的流量
-			acceptArgs := append([]string{"-A", "INPUT"}, args...)
-			acceptArgs = append(acceptArgs, "-j", "ACCEPT")
-			if err := t.run(bin, acceptArgs...); err != nil {
-				return err
-			}
-		} else {
-			// 黑名单模式：DROP 匹配的流量
-			dropArgs := append([]string{"-A", "INPUT"}, args...)
-			dropArgs = append(dropArgs, "-j", "DROP")
-			if err := t.run(bin, dropArgs...); err != nil {
-				return err
+		for _, proto := range protocols {
+			args := t.buildRuleArgs(spec, proto, comment)
+
+			if spec.Mode == "white" {
+				// 白名单模式：ACCEPT 匹配的流量
+				acceptArgs := append([]string{"-I", chain, "1"}, args...)
+				acceptArgs = append(acceptArgs, "-j", "ACCEPT")
+				if err := t.run(bin, acceptArgs...); err != nil {
+					// 非 INPUT 链失败时仅跳过（链可能不完全兼容）
+					if chain != "INPUT" {
+						continue
+					}
+					return err
+				}
+			} else {
+				// 黑名单模式：DROP 匹配的流量
+				dropArgs := append([]string{"-I", chain, "1"}, args...)
+				dropArgs = append(dropArgs, "-j", "DROP")
+				if err := t.run(bin, dropArgs...); err != nil {
+					if chain != "INPUT" {
+						continue
+					}
+					return err
+				}
 			}
 		}
-	}
 
-	// 白名单模式：额外添加 DROP ALL 规则（放在最后）
-	if spec.Mode == "white" {
-		dropAllComment := fmt.Sprintf("%s%d_drop", CommentPrefix, spec.RuleID)
-		for _, proto := range protocols {
-			var dropArgs []string
-			if proto != "" {
-				dropArgs = []string{"-A", "INPUT", "-p", proto}
-			} else {
-				dropArgs = []string{"-A", "INPUT"}
+		// 白名单模式：额外添加 DROP ALL 规则（放在最后）
+		if spec.Mode == "white" {
+			if spec.IPv6 && chain == "DOCKER-USER" {
+				continue
 			}
-			if spec.Port != "" && proto != "" {
-				dropArgs = append(dropArgs, "--dport", normalizePort(spec.Port))
-			}
-			dropArgs = append(dropArgs, "-m", "comment", "--comment", dropAllComment, "-j", "DROP")
-			if err := t.run(bin, dropArgs...); err != nil {
-				return err
+			dropAllComment := fmt.Sprintf("%s%d_drop", CommentPrefix, spec.RuleID)
+			for _, proto := range protocols {
+				var dropArgs []string
+				if proto != "" {
+					dropArgs = []string{"-A", chain, "-p", proto}
+				} else {
+					dropArgs = []string{"-A", chain}
+				}
+				if spec.Port != "" && proto != "" && proto != "icmp" {
+					dropArgs = append(dropArgs, "--dport", normalizePort(spec.Port))
+				}
+				dropArgs = append(dropArgs, "-m", "comment", "--comment", dropAllComment, "-j", "DROP")
+				if err := t.run(bin, dropArgs...); err != nil {
+					if chain != "INPUT" {
+						continue
+					}
+					return err
+				}
 			}
 		}
 	}
@@ -153,13 +219,11 @@ func (t *IPTables) RemoveRule(ruleID int) error {
 	comment := fmt.Sprintf("%s%d", CommentPrefix, ruleID)
 	dropComment := fmt.Sprintf("%s%d_drop", CommentPrefix, ruleID)
 
-	// 从 iptables 和 ip6tables 中移除
+	// 从所有链中移除（iptables 和 ip6tables）
 	for _, bin := range []string{t.iptablesBin, t.ip6tablesBin} {
-		if err := t.removeByComment(bin, comment); err != nil {
-			return err
-		}
-		if err := t.removeByComment(bin, dropComment); err != nil {
-			return err
+		for _, chain := range t.chains {
+			t.removeByComment(bin, chain, comment)
+			t.removeByComment(bin, chain, dropComment)
 		}
 	}
 
@@ -169,8 +233,8 @@ func (t *IPTables) RemoveRule(ruleID int) error {
 // RemoveAllBAB 移除所有 bab: 开头注释的规则
 func (t *IPTables) RemoveAllBAB() error {
 	for _, bin := range []string{t.iptablesBin, t.ip6tablesBin} {
-		if err := t.removeAllByPrefix(bin, CommentPrefix); err != nil {
-			return err
+		for _, chain := range t.chains {
+			t.removeAllByPrefix(bin, chain, CommentPrefix)
 		}
 	}
 	return nil
@@ -180,18 +244,25 @@ func (t *IPTables) RemoveAllBAB() error {
 func (t *IPTables) GetRuleCount() int {
 	count := 0
 	for _, bin := range []string{t.iptablesBin, t.ip6tablesBin} {
-		cmd := exec.Command(bin, "-L", "INPUT", "-n", "--line-numbers")
-		output, err := cmd.Output()
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(output), "\n") {
-			if strings.Contains(line, CommentPrefix) {
-				count++
+		for _, chain := range t.chains {
+			cmd := exec.Command(bin, "-L", chain, "-n", "--line-numbers")
+			output, err := cmd.Output()
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(output), "\n") {
+				if strings.Contains(line, CommentPrefix) {
+					count++
+				}
 			}
 		}
 	}
 	return count
+}
+
+// GetDetectedChains 返回检测到的链列表（用于状态显示）
+func (t *IPTables) GetDetectedChains() []string {
+	return t.chains
 }
 
 // buildRuleArgs 构建规则参数
@@ -218,67 +289,39 @@ func (t *IPTables) buildRuleArgs(spec RuleSpec, proto, comment string) []string 
 }
 
 // removeByComment 移除包含指定注释的所有规则
-func (t *IPTables) removeByComment(bin, comment string) error {
+func (t *IPTables) removeByComment(bin, chain, comment string) {
 	for {
 		// 查找包含该注释的规则行号
-		lineNum := t.findRuleByComment(bin, comment)
+		lineNum := t.findRuleInChain(bin, chain, comment)
 		if lineNum == 0 {
 			break
 		}
-
 		// 按行号删除
-		if err := t.run(bin, "-D", "INPUT", fmt.Sprintf("%d", lineNum)); err != nil {
-			return err
-		}
+		exec.Command(bin, "-D", chain, fmt.Sprintf("%d", lineNum)).Run()
 	}
-	return nil
 }
 
 // removeAllByPrefix 移除所有以指定前缀开头的注释的规则
-func (t *IPTables) removeAllByPrefix(bin, prefix string) error {
+func (t *IPTables) removeAllByPrefix(bin, chain, prefix string) {
 	for {
-		lineNum := t.findRuleByCommentPrefix(bin, prefix)
+		lineNum := t.findRuleInChain(bin, chain, prefix)
 		if lineNum == 0 {
 			break
 		}
-
-		if err := t.run(bin, "-D", "INPUT", fmt.Sprintf("%d", lineNum)); err != nil {
-			return err
-		}
+		exec.Command(bin, "-D", chain, fmt.Sprintf("%d", lineNum)).Run()
 	}
-	return nil
 }
 
-// findRuleByComment 查找包含指定注释的规则行号
-func (t *IPTables) findRuleByComment(bin, comment string) int {
-	cmd := exec.Command(bin, "-L", "INPUT", "-n", "--line-numbers")
+// findRuleInChain 在指定链中查找包含指定字符串的规则行号
+func (t *IPTables) findRuleInChain(bin, chain, search string) int {
+	cmd := exec.Command(bin, "-L", chain, "-n", "--line-numbers")
 	output, err := cmd.Output()
 	if err != nil {
 		return 0
 	}
 
 	for _, line := range strings.Split(string(output), "\n") {
-		if strings.Contains(line, comment) {
-			var num int
-			fmt.Sscanf(line, "%d", &num)
-			if num > 0 {
-				return num
-			}
-		}
-	}
-	return 0
-}
-
-// findRuleByCommentPrefix 查找包含指定注释前缀的规则行号
-func (t *IPTables) findRuleByCommentPrefix(bin, prefix string) int {
-	cmd := exec.Command(bin, "-L", "INPUT", "-n", "--line-numbers")
-	output, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-
-	for _, line := range strings.Split(string(output), "\n") {
-		if strings.Contains(line, prefix) {
+		if strings.Contains(line, search) {
 			var num int
 			fmt.Sscanf(line, "%d", &num)
 			if num > 0 {

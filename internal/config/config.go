@@ -61,7 +61,7 @@ type Config struct {
 	Crons           []CronJob `json:"crons"`
 	NextID          int       `json:"next_id"`           // 下一个可用的 repo ID
 	NextRule        int       `json:"next_rule"`         // 下一个可用的 rule ID
-	FirewallBackend string    `json:"firewall_backend"`  // 防火墙后端: iptables, ufw, docker, bt（空则自动检测）
+	FirewallBackend string    `json:"firewall_backend"`  // 防火墙后端: iptables, ufw（空则自动检测，iptables 自动兼容 Docker/宝塔环境）
 }
 
 // Manager 配置管理器

@@ -2,7 +2,8 @@
 package firewall
 
 // Backend 防火墙后端接口
-// 所有防火墙后端（iptables、ufw、docker、宝塔）都需要实现此接口
+// 所有防火墙后端（iptables、ufw）都需要实现此接口
+// iptables 后端会自动兼容 Docker (DOCKER-USER 链) 和宝塔 (BT-INPUT 链) 环境
 type Backend interface {
 	// Name 返回后端名称
 	Name() string
@@ -29,25 +30,17 @@ type BackendType string
 const (
 	BackendIPTables BackendType = "iptables"
 	BackendUFW      BackendType = "ufw"
-	BackendDocker   BackendType = "docker"
-	BackendBT       BackendType = "bt" // 宝塔
 )
 
 // DetectBackend 自动检测可用的防火墙后端
+// 优先检测 ufw（如果已启用），否则使用 iptables
+// iptables 后端会自动兼容 Docker 和宝塔环境的链结构
 func DetectBackend() BackendType {
-	// 优先检测宝塔（宝塔底层也用 iptables，但有自己的管理方式）
-	if isBTPanel() {
-		return BackendBT
-	}
-	// 检测 ufw
+	// 检测 ufw 是否已启用
 	if isUFWAvailable() {
 		return BackendUFW
 	}
-	// 检测 Docker 环境（DOCKER chain 存在）
-	if isDockerEnvironment() {
-		return BackendDocker
-	}
-	// 默认使用 iptables
+	// 默认使用 iptables（自动兼容 Docker/宝塔）
 	return BackendIPTables
 }
 
@@ -56,10 +49,6 @@ func NewBackend(backendType BackendType) (Backend, error) {
 	switch backendType {
 	case BackendUFW:
 		return NewUFW()
-	case BackendDocker:
-		return NewDockerFirewall()
-	case BackendBT:
-		return NewBTFirewall()
 	default:
 		return NewIPTables()
 	}
