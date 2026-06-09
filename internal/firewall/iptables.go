@@ -47,12 +47,21 @@ func NewIPTables() (*IPTables, error) {
 
 // detectChains 自动检测当前环境需要操作的链
 // - INPUT 链：始终操作（主机流量）
+// - FORWARD 链：存在端口转发（DNAT）时操作（转发流量不经过 INPUT）
 // - DOCKER-USER 链：Docker 环境下操作（容器流量经过 FORWARD 链，不走 INPUT）
 // - BT-INPUT 链：宝塔面板环境下操作（宝塔自定义链）
 func (t *IPTables) detectChains() {
 	t.chains = []string{"INPUT"}
 
+	// 检测是否存在端口转发（DNAT）规则
+	// 端口转发的流量走 PREROUTING → FORWARD → POSTROUTING，不经过 INPUT 链
+	// 如果存在 DNAT 规则，必须在 FORWARD 链中也插入屏蔽规则
+	if t.hasDNATRules() {
+		t.chains = append(t.chains, "FORWARD")
+	}
+
 	// 检测 Docker 环境：DOCKER-USER 链存在
+	// Docker 的 FORWARD 流量会先经过 DOCKER-USER 链，所以优先使用它
 	if t.chainExists(t.iptablesBin, "DOCKER-USER") {
 		t.chains = append(t.chains, "DOCKER-USER")
 	}
@@ -69,33 +78,102 @@ func (t *IPTables) chainExists(bin, chain string) bool {
 	return cmd.Run() == nil
 }
 
-// findIPTables 查找 iptables 可执行文件
-func findIPTables() string {
-	// 优先使用 iptables-legacy
-	if bin, err := exec.LookPath("iptables-legacy"); err == nil {
-		return bin
+// hasDNATRules 检测 nat 表 PREROUTING 链中是否存在 DNAT 规则
+// 存在 DNAT 意味着有端口转发，转发流量走 FORWARD 链而非 INPUT 链
+func (t *IPTables) hasDNATRules() bool {
+	cmd := exec.Command(t.iptablesBin, "-t", "nat", "-L", "PREROUTING", "-n")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
 	}
-	if bin, err := exec.LookPath("iptables"); err == nil {
-		return bin
+	// 检查输出中是否包含 DNAT 目标
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "DNAT") || strings.Contains(line, "REDIRECT") {
+			return true
+		}
+	}
+	return false
+}
+
+// findIPTables 查找 iptables 可执行文件
+// 优先使用与当前系统实际规则匹配的版本
+// 现代系统（Docker + UFW）通常使用 iptables-nft 后端
+func findIPTables() string {
+	nft, _ := exec.LookPath("iptables")
+	legacy, _ := exec.LookPath("iptables-legacy")
+
+	// 如果两个都存在，选择实际管理规则的那个
+	if nft != "" && legacy != "" {
+		// 检查哪个版本有 DOCKER-USER 或 FORWARD 链中有实际规则
+		// nft 版本通常是现代系统的默认选择
+		if hasActiveRules(nft) {
+			return nft
+		}
+		if hasActiveRules(legacy) {
+			return legacy
+		}
+		// 都没有活跃规则时，优先使用 iptables（nft 版本）
+		return nft
+	}
+	if nft != "" {
+		return nft
+	}
+	if legacy != "" {
+		return legacy
 	}
 	return ""
 }
 
 // findIP6Tables 查找 ip6tables 可执行文件
 func findIP6Tables() string {
-	if bin, err := exec.LookPath("ip6tables-legacy"); err == nil {
-		return bin
+	nft, _ := exec.LookPath("ip6tables")
+	legacy, _ := exec.LookPath("ip6tables-legacy")
+
+	if nft != "" && legacy != "" {
+		if hasActiveRules(nft) {
+			return nft
+		}
+		if hasActiveRules(legacy) {
+			return legacy
+		}
+		return nft
 	}
-	if bin, err := exec.LookPath("ip6tables"); err == nil {
-		return bin
+	if nft != "" {
+		return nft
+	}
+	if legacy != "" {
+		return legacy
 	}
 	return ""
+}
+
+// hasActiveRules 检查指定 iptables 二进制是否有活跃的规则
+// 通过检查 FORWARD 链或 DOCKER-USER 链是否有规则来判断
+func hasActiveRules(bin string) bool {
+	// 优先检查 DOCKER-USER 链（Docker 环境标志）
+	cmd := exec.Command(bin, "-L", "DOCKER-USER", "-n")
+	if cmd.Run() == nil {
+		return true
+	}
+	// 检查 FORWARD 链是否有非默认规则
+	cmd = exec.Command(bin, "-L", "FORWARD", "-n", "--line-numbers")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	// 超过 2 行（标题 + 列头）说明有实际规则
+	return len(lines) > 2
 }
 
 // Name 返回后端名称（包含兼容环境信息）
 func (t *IPTables) Name() string {
 	extras := []string{}
 	for _, chain := range t.chains {
+		if chain == "FORWARD" {
+			extras = append(extras, "forward/dnat")
+		}
 		if chain == "DOCKER-USER" {
 			extras = append(extras, "docker")
 		}
@@ -130,7 +208,8 @@ type RuleSpec struct {
 }
 
 // ApplyRule 应用一条规则到 iptables
-// 自动在所有检测到的链（INPUT、DOCKER-USER、BT-INPUT）中插入规则
+// 自动在所有检测到的链（INPUT、FORWARD、DOCKER-USER、BT-INPUT）中插入规则
+// FORWARD 链用于拦截端口转发（DNAT）的流量
 func (t *IPTables) ApplyRule(spec RuleSpec) error {
 	bin := t.iptablesBin
 	if spec.IPv6 {
