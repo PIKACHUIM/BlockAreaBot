@@ -23,7 +23,7 @@ type IPTables struct {
 // NewIPTables 创建 IPTables 实例
 // 自动检测当前环境，确定需要操作的链
 func NewIPTables() (*IPTables, error) {
-	// 优先查找 iptables-legacy，然后 iptables
+	// 智能选择 iptables 版本（优先使用有活跃规则的版本）
 	ipt := findIPTables()
 	if ipt == "" {
 		return nil, fmt.Errorf("未找到 iptables 命令，请确保已安装 iptables")

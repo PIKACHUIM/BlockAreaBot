@@ -13,8 +13,24 @@ func newRepoCmd() *cobra.Command {
 	repoCmd.AddCommand(newRepoAddCmd())
 	repoCmd.AddCommand(newRepoDelCmd())
 	repoCmd.AddCommand(newRepoListCmd())
+	repoCmd.AddCommand(newRepoUpdateCmd())
 
 	return repoCmd
+}
+
+func newRepoUpdateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update [tag/repo-id]",
+		Short: "更新数据源并重新应用屏蔽规则",
+		Long:  `更新指定数据源（重新下载 IP 段数据），不指定则更新所有数据源。更新后自动刷新关联的防火墙规则。`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var target string
+			if len(args) > 0 {
+				target = args[0]
+			}
+			return repoUpdate(target)
+		},
+	}
 }
 
 func newRepoAddCmd() *cobra.Command {

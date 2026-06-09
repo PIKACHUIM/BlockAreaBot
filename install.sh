@@ -27,7 +27,26 @@ INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/block-area-bot"
 DATA_DIR="/var/lib/block-area-bot"
 LOG_DIR="/var/log/block-area-bot"
-GH_URL="github.524228.xyz"
+
+# GitHub 下载代理列表（按优先级排列，依次尝试直到成功）
+GH_PROXIES=(
+    "https://github.com/"
+    "https://github.524228.xyz/"
+    "https://ghfast.top/https://github.com/"
+    "https://ghproxy.net/https://github.com/"
+    "https://gh-proxy.org/https://github.com/"
+
+)
+
+# GitHub API 代理列表
+GH_API_PROXIES=(
+    "https://api.github.com/"
+    "https://api.github.524228.xyz/"
+    "https://ghfast.top/https://api.github.com/"
+    "https://ghproxy.net/https://api.github.com/"
+    "https://gh-proxy.org/https://api.github.com/"
+)
+
 # 用户指定的版本号（为空则自动获取 beta）
 USER_VERSION=""
 
@@ -118,6 +137,21 @@ parse_args() {
     done
 }
 
+# 通过代理列表请求 GitHub API（依次尝试直到成功）
+gh_api_request() {
+    local path="$1"
+    local result=""
+    for api_base in "${GH_API_PROXIES[@]}"; do
+        local url="${api_base}${path}"
+        result=$(curl -fsSL --connect-timeout 10 --max-time 30 "$url" 2>/dev/null)
+        if [ $? -eq 0 ] && [ -n "$result" ]; then
+            echo "$result"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # 获取版本号（优先使用用户指定版本，否则拉取 beta release）
 get_version() {
     if [ -n "$USER_VERSION" ]; then
@@ -127,11 +161,14 @@ get_version() {
     else
         # 默认拉取 beta release（tag 为 beta）
         info "正在获取 beta 版本信息..."
-        VERSION=$(curl -fsSL "https://api.${GH_URL}/repos/${REPO}/releases/tags/beta" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        local release_info
+        release_info=$(gh_api_request "repos/${REPO}/releases/tags/beta")
+        VERSION=$(echo "$release_info" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
             # 如果没有 beta release，尝试获取最新 release
             warn "未找到 beta 版本，尝试获取最新正式版本..."
-            VERSION=$(curl -fsSL "https://api.${GH_URL}/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            release_info=$(gh_api_request "repos/${REPO}/releases/latest")
+            VERSION=$(echo "$release_info" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         fi
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
             error "无法获取版本号，请使用 --version 手动指定"
@@ -143,14 +180,30 @@ get_version() {
     VERSION=$(echo "$VERSION" | sed 's/^v//')
 }
 
+# 通过代理列表下载文件（依次尝试直到成功）
+gh_download() {
+    local path="$1"
+    local dest="$2"
+    for proxy in "${GH_PROXIES[@]}"; do
+        local url="${proxy}${REPO}/releases/download/${path}"
+        info "尝试下载: $url"
+        if curl -fsSL --connect-timeout 10 --max-time 300 "$url" -o "$dest" 2>/dev/null; then
+            info "下载成功"
+            return 0
+        fi
+        warn "下载失败，尝试下一个代理..."
+    done
+    return 1
+}
+
 # 下载并安装
 install_binary() {
     # 文件名格式与 GitHub Actions 构建产物一致: block-linux-<arch>.tar.gz
-    local url="https://${GH_URL}/${REPO}/releases/download/${VERSION_TAG}/block-linux-${ARCH}.tar.gz"
+    local file_name="block-linux-${ARCH}.tar.gz"
     local tmp_dir=$(mktemp -d)
     
-    info "正在下载: $url"
-    curl -fsSL "$url" -o "${tmp_dir}/release.tar.gz" || error "下载失败"
+    info "正在下载 ${file_name}..."
+    gh_download "${VERSION_TAG}/${file_name}" "${tmp_dir}/release.tar.gz" || error "所有下载源均失败"
     
     info "正在解压..."
     tar -xzf "${tmp_dir}/release.tar.gz" -C "${tmp_dir}"

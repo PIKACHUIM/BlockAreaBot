@@ -44,4 +44,6 @@ func init() {
 	rootCmd.AddCommand(newCronCmd())
 	rootCmd.AddCommand(newDaemonCmd())
 	rootCmd.AddCommand(newUpdateCmd())
+	rootCmd.AddCommand(newInstallCmd())
+	rootCmd.AddCommand(newUninstallCmd())
 }

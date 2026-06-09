@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/soulteary/block-area-bot/internal/config"
+	"github.com/soulteary/block-area-bot/internal/firewall"
 	"github.com/soulteary/block-area-bot/internal/repo"
+	"github.com/soulteary/block-area-bot/internal/rule"
 )
 
 // repoAdd 添加数据源
@@ -134,5 +136,104 @@ func repoList() error {
 			r.ID, r.Tag, r.Type, source, r.IPv4Count, r.IPv6Count, updatedAt)
 	}
 
+	return nil
+}
+
+// repoUpdate 更新数据源并重新应用屏蔽规则
+// target 为空时更新所有数据源，否则更新指定 tag 或 repo-id 的数据源
+func repoUpdate(target string) error {
+	if err := checkRoot(); err != nil {
+		return err
+	}
+
+	cfg := config.NewManager()
+	if err := cfg.Load(); err != nil {
+		return fmt.Errorf("加载配置失败: %w", err)
+	}
+
+	c := cfg.GetConfig()
+	if len(c.Repos) == 0 {
+		fmt.Println("暂无数据源，使用 'block repo add' 添加")
+		return nil
+	}
+
+	// 确定要更新的数据源列表
+	var targets []config.Repo
+	if target == "" {
+		// 更新所有
+		targets = c.Repos
+	} else {
+		// 更新指定的
+		repoInfo, exists := cfg.GetRepo(target)
+		if !exists {
+			return fmt.Errorf("数据源 '%s' 不存在", target)
+		}
+		targets = []config.Repo{repoInfo}
+	}
+
+	// 初始化防火墙组件
+	ipset, err := firewall.NewIPSet()
+	if err != nil {
+		return fmt.Errorf("初始化 ipset 失败: %w", err)
+	}
+	backend := initBackend(cfg)
+	ruleMgr := rule.NewManager(cfg, ipset, backend)
+
+	fmt.Printf("正在更新 %d 个数据源...\n", len(targets))
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	successCount := 0
+	failCount := 0
+
+	for _, r := range targets {
+		fmt.Printf("\n  [%s] 正在更新 (类型: %s)...\n", r.Tag, r.Type)
+
+		// 重新下载并解析数据
+		ipData, err := repo.FetchAndParse(r.Type, r.Source)
+		if err != nil {
+			fmt.Printf("  [%s] ✗ 获取数据失败: %v\n", r.Tag, err)
+			failCount++
+			continue
+		}
+
+		// 保存数据文件
+		dataPath := cfg.GetRepoDataPath(r.Tag)
+		if err := repo.SaveIPData(dataPath, ipData); err != nil {
+			fmt.Printf("  [%s] ✗ 保存数据失败: %v\n", r.Tag, err)
+			failCount++
+			continue
+		}
+
+		// 更新配置中的元数据
+		if err := cfg.UpdateRepo(r.Tag, func(repo *config.Repo) {
+			repo.IPv4Count = len(ipData.IPv4)
+			repo.IPv6Count = len(ipData.IPv6)
+			repo.UpdatedAt = time.Now()
+		}); err != nil {
+			fmt.Printf("  [%s] ✗ 更新配置失败: %v\n", r.Tag, err)
+			failCount++
+			continue
+		}
+
+		// 刷新关联的防火墙规则（原子更新 ipset 集合）
+		if err := ruleMgr.RefreshRule(r.Tag); err != nil {
+			fmt.Printf("  [%s] ⚠ 数据已更新，但刷新防火墙规则失败: %v\n", r.Tag, err)
+			fmt.Printf("        IPv4: %d 条, IPv6: %d 条\n", len(ipData.IPv4), len(ipData.IPv6))
+			successCount++ // 数据更新成功，只是规则刷新失败
+			continue
+		}
+
+		fmt.Printf("  [%s] ✓ 更新成功 (IPv4: %d 条, IPv6: %d 条)\n",
+			r.Tag, len(ipData.IPv4), len(ipData.IPv6))
+		successCount++
+	}
+
+	fmt.Println()
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("更新完成: 成功 %d, 失败 %d\n", successCount, failCount)
+
+	if failCount > 0 {
+		return fmt.Errorf("%d 个数据源更新失败", failCount)
+	}
 	return nil
 }

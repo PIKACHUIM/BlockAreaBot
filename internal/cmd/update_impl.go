@@ -21,6 +21,23 @@ const (
 	binaryInstallPath = "/usr/local/bin/block"
 )
 
+// GitHub 下载代理列表（按优先级排列，依次尝试直到成功）
+var ghDownloadProxies = []string{
+	"https://github.com/",
+	"https://github.524228.xyz/",
+	"https://gh-proxy.org/https://github.com/",
+	"https://ghfast.top/https://github.com/",
+	"https://github.ur1.fun/https://github.com/",
+	"https://ghproxy.net/https://github.com/",
+	"https://hubp.llkk.cc/https://github.com/",
+}
+
+// GitHub API 代理列表
+var ghAPIProxies = []string{
+	"https://api.github.com/",
+	"https://api.github.524228.xyz/",
+}
+
 // githubRelease GitHub Release API 响应结构
 type githubRelease struct {
 	TagName string         `json:"tag_name"`
@@ -183,32 +200,34 @@ func runUpdate(version string, force bool) error {
 	return nil
 }
 
-// fetchRelease 获取 GitHub Release 信息
+// fetchRelease 获取 GitHub Release 信息（通过代理列表依次尝试）
 func fetchRelease(version string) (*githubRelease, error) {
-	var url string
+	var paths []string
 	if version == "" {
 		// 默认获取 beta release
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/beta", repoOwner, repoName)
+		paths = append(paths, fmt.Sprintf("repos/%s/%s/releases/tags/beta", repoOwner, repoName))
+		// 备选：latest
+		paths = append(paths, fmt.Sprintf("repos/%s/%s/releases/latest", repoOwner, repoName))
 	} else {
-		// 指定版本
 		version = strings.TrimPrefix(version, "v")
-		// 先尝试 tag 为 v+version
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/v%s", repoOwner, repoName, version)
+		// 先尝试 v 前缀
+		paths = append(paths, fmt.Sprintf("repos/%s/%s/releases/tags/v%s", repoOwner, repoName, version))
+		// 再尝试不带 v
+		paths = append(paths, fmt.Sprintf("repos/%s/%s/releases/tags/%s", repoOwner, repoName, version))
 	}
 
-	release, err := fetchReleaseFromURL(url)
-	if err != nil && version != "" {
-		// 尝试不带 v 前缀
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/%s", repoOwner, repoName, version)
-		release, err = fetchReleaseFromURL(url)
+	var lastErr error
+	for _, path := range paths {
+		for _, apiBase := range ghAPIProxies {
+			url := apiBase + path
+			release, err := fetchReleaseFromURL(url)
+			if err == nil {
+				return release, nil
+			}
+			lastErr = err
+		}
 	}
-	if err != nil && version == "" {
-		// beta 不存在，尝试 latest
-		url = fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/latest", repoOwner, repoName)
-		release, err = fetchReleaseFromURL(url)
-	}
-
-	return release, err
+	return nil, lastErr
 }
 
 // fetchReleaseFromURL 从指定 URL 获取 Release 信息
@@ -232,9 +251,43 @@ func fetchReleaseFromURL(url string) (*githubRelease, error) {
 	return &release, nil
 }
 
-// downloadFile 下载文件到指定路径
+// downloadFile 下载文件到指定路径（通过代理列表依次尝试）
 func downloadFile(url, destPath string) error {
-	client := &http.Client{Timeout: 120 * time.Second}
+	// 从原始 URL 中提取 GitHub 路径部分
+	// 原始 URL 格式: https://github.com/OWNER/REPO/releases/download/TAG/FILE
+	ghPath := ""
+	for _, prefix := range []string{
+		"https://github.com/",
+		"http://github.com/",
+	} {
+		if strings.HasPrefix(url, prefix) {
+			ghPath = strings.TrimPrefix(url, prefix)
+			break
+		}
+	}
+
+	// 如果能提取出 GitHub 路径，使用代理列表下载
+	if ghPath != "" {
+		var lastErr error
+		for _, proxy := range ghDownloadProxies {
+			proxyURL := proxy + ghPath
+			fmt.Printf("        尝试: %s\n", proxyURL)
+			err := downloadFromURL(proxyURL, destPath)
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+		}
+		return fmt.Errorf("所有下载源均失败: %w", lastErr)
+	}
+
+	// 非 GitHub URL，直接下载
+	return downloadFromURL(url, destPath)
+}
+
+// downloadFromURL 从指定 URL 下载文件
+func downloadFromURL(url, destPath string) error {
+	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
@@ -242,7 +295,7 @@ func downloadFile(url, destPath string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("下载失败，HTTP 状态码: %d", resp.StatusCode)
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	out, err := os.Create(destPath)
