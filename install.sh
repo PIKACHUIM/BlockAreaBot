@@ -38,7 +38,7 @@ GH_PROXIES=(
 
 )
 
-# GitHub API 代理列表
+# GitHub API 代理列表（与下载代理列表顺序一致）
 GH_API_PROXIES=(
     "https://api.github.com/"
     "https://api.github.524228.xyz/"
