@@ -27,7 +27,7 @@ INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/block-area-bot"
 DATA_DIR="/var/lib/block-area-bot"
 LOG_DIR="/var/log/block-area-bot"
-
+GH_URL="github.524228.xyz"
 # 用户指定的版本号（为空则自动获取 beta）
 USER_VERSION=""
 
@@ -127,11 +127,11 @@ get_version() {
     else
         # 默认拉取 beta release（tag 为 beta）
         info "正在获取 beta 版本信息..."
-        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/beta" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        VERSION=$(curl -fsSL "https://api.${GH_URL}/repos/${REPO}/releases/tags/beta" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
             # 如果没有 beta release，尝试获取最新 release
             warn "未找到 beta 版本，尝试获取最新正式版本..."
-            VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+            VERSION=$(curl -fsSL "https://api.${GH_URL}/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
         fi
         if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
             error "无法获取版本号，请使用 --version 手动指定"
@@ -146,7 +146,7 @@ get_version() {
 # 下载并安装
 install_binary() {
     # 文件名格式与 GitHub Actions 构建产物一致: block-linux-<arch>.tar.gz
-    local url="https://github.com/${REPO}/releases/download/${VERSION_TAG}/block-linux-${ARCH}.tar.gz"
+    local url="https://${GH_URL}/${REPO}/releases/download/${VERSION_TAG}/block-linux-${ARCH}.tar.gz"
     local tmp_dir=$(mktemp -d)
     
     info "正在下载: $url"
