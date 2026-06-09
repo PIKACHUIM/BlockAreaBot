@@ -54,7 +54,7 @@ func runUpdate(version string, force bool) error {
 
 	// 2. 查找匹配当前架构的资源文件
 	arch := runtime.GOARCH
-	assetName := fmt.Sprintf("block-area-bot_linux_%s", arch)
+	assetName := fmt.Sprintf("block-linux-%s", arch)
 	var targetAsset *githubAsset
 	for i, asset := range release.Assets {
 		if strings.Contains(asset.Name, assetName) && strings.HasSuffix(asset.Name, ".tar.gz") {

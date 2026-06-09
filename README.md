@@ -107,7 +107,7 @@ curl -fsSL https://raw.githubusercontent.com/PIKACHUIM/BlockAreaBot/main/install
 2. 解压并安装：
 
 ```bash
-tar -xzf block-area-bot_*_linux_amd64.tar.gz
+tar -xzf block-linux-amd64.tar.gz
 sudo install -Dm755 block /usr/local/bin/block
 sudo install -Dm644 dist/block-area-bot.service /etc/systemd/system/block-area-bot.service
 sudo systemctl daemon-reload

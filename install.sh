@@ -145,8 +145,8 @@ get_version() {
 
 # 下载并安装
 install_binary() {
-    # 尝试多种可能的下载 URL 格式
-    local url="https://github.com/${REPO}/releases/download/${VERSION_TAG}/${SERVICE_NAME}_${VERSION}_linux_${ARCH}.tar.gz"
+    # 文件名格式与 GitHub Actions 构建产物一致: block-linux-<arch>.tar.gz
+    local url="https://github.com/${REPO}/releases/download/${VERSION_TAG}/block-linux-${ARCH}.tar.gz"
     local tmp_dir=$(mktemp -d)
     
     info "正在下载: $url"
