@@ -1,0 +1,23 @@
+[Unit]
+Description=Block Area Bot - IP/Region based access control service
+Documentation=https://github.com/PLACEHOLDER/block-area-bot
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/block daemon
+ExecStop=/bin/kill -SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# 安全加固
+NoNewPrivileges=no
+ProtectSystem=strict
+ReadWritePaths=/var/lib/block-area-bot /var/log/block-area-bot /etc/block-area-bot
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

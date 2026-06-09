@@ -1,0 +1,31 @@
+# Maintainer: Block Area Bot <noreply@example.com>
+pkgname=block-area-bot
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="IP/Region based access control service using iptables + ipset"
+arch=('x86_64' 'aarch64')
+url="https://github.com/PLACEHOLDER/block-area-bot"
+license=('GPL3')
+depends=('iptables' 'ipset')
+source_x86_64=("${url}/releases/download/v${pkgver}/${pkgname}_${pkgver}_linux_amd64.tar.gz")
+source_aarch64=("${url}/releases/download/v${pkgver}/${pkgname}_${pkgver}_linux_arm64.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm755 block "${pkgdir}/usr/local/bin/block"
+    install -Dm644 dist/block-area-bot.service "${pkgdir}/etc/systemd/system/block-area-bot.service"
+    install -Dm644 dist/config.json "${pkgdir}/etc/block-area-bot/config.json"
+    install -dm755 "${pkgdir}/var/lib/block-area-bot"
+    install -dm755 "${pkgdir}/var/log/block-area-bot"
+}
+
+post_install() {
+    systemctl daemon-reload
+    echo "使用 'block enable && block start' 启动服务"
+}
+
+pre_remove() {
+    systemctl stop block-area-bot 2>/dev/null || true
+    systemctl disable block-area-bot 2>/dev/null || true
+}

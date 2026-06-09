@@ -1,0 +1,94 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号 (如 1.0.0，留空则使用 beta)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+            echo "version=beta-${SHORT_SHA}" >> $GITHUB_OUTPUT
+            echo "tag=beta" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build linux-amd64
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -o build/block-linux-amd64 .
+
+      # - name: Build linux-386
+      #   env:
+      #     CGO_ENABLED: '0'
+      #     GOOS: linux
+      #     GOARCH: '386'
+      #   run: |
+      #     go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
+      #       -o build/block-linux-386 .
+
+      # - name: Build linux-arm64
+      #   env:
+      #     CGO_ENABLED: '0'
+      #     GOOS: linux
+      #     GOARCH: arm64
+      #   run: |
+      #     go build -trimpath -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
+      #       -o build/block-linux-arm64 .
+
+      - name: Package artifacts
+        run: |
+          cd build
+          for bin in block-linux-*; do
+            chmod +x "$bin"
+            tar -czf "${bin}.tar.gz" "$bin" -C ../dist block-area-bot.service config.json
+          done
+
+      - name: Delete existing beta release
+        if: steps.version.outputs.prerelease == 'true'
+        run: |
+          gh release delete beta --yes --cleanup-tag 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Block Area Bot ${{ steps.version.outputs.version }}"
+          prerelease: ${{ steps.version.outputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            build/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

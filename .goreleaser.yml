@@ -1,0 +1,72 @@
+project_name: block-area-bot
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: block
+    main: .
+    binary: block
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - dist/block-area-bot.service
+      - dist/config.json
+      - LICENSE
+
+nfpms:
+  - id: packages
+    package_name: block-area-bot
+    vendor: Block Area Bot
+    homepage: https://github.com/PLACEHOLDER/block-area-bot
+    maintainer: Block Area Bot <noreply@example.com>
+    description: IP/Region based access control service using iptables + ipset
+    license: GPLv3
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/local/bin
+    contents:
+      - src: dist/block-area-bot.service
+        dst: /etc/systemd/system/block-area-bot.service
+        type: config
+      - src: dist/config.json
+        dst: /etc/block-area-bot/config.json
+        type: config|noreplace
+    scripts:
+      postinstall: dist/scripts/postinstall.sh
+      preremove: dist/scripts/preremove.sh
+    overrides:
+      deb:
+        dependencies:
+          - iptables
+          - ipset
+      rpm:
+        dependencies:
+          - iptables
+          - ipset
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
